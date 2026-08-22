@@ -3188,12 +3188,15 @@ func (ev *EditorView) StartIndexing() {
 	ev.retireEditSession()
 	sessionID := ev.editSession
 	ev.probeUnsafeWordWrap()
-	// Mapped and fully decoded files already have their line index; they still
-	// need the safety scan before wrapping can be enabled.
-	if ev.asyncBuf == nil {
+	// Fully decoded files have their line index built with them; they still
+	// need the safety scan before wrapping can be enabled. A mapped file has
+	// neither: it starts with an empty index the scan below fills, and that
+	// scan runs the same safety check on every chunk it reads.
+	if ev.asyncBuf == nil && ev.mapped == nil {
 		// Fully read files (non-UTF-8 codepages) have a complete index and no
 		// line scan; resolve a pending restore here or Loading waits forever.
 		ev.restoreTargetPos()
+		ev.resolveTargetOffset()
 		ctx, cancel := context.WithCancel(context.Background())
 		ev.indexCancel = cancel
 		go func() {

@@ -104,6 +104,20 @@ func (ev *EditorView) setIndexStatus(s IndexStatus) {
 	}
 }
 
+// noteIndexProgress is what the scan reports through: how far it has read and
+// how many lines that came to. It keeps the phase as it is.
+//
+// Removed once as dead code, correctly at the time: the scan updated its
+// status only at start and finish, so the status line showed 0% for the whole
+// of a scan — which on a file big enough to watch reads as a scan that is
+// stuck rather than one that is working. The batches call it now.
+func (ev *EditorView) noteIndexProgress(scanned int64, lines int) {
+	s := ev.indexStatus
+	s.Scanned = scanned
+	s.Lines = lines
+	ev.setIndexStatus(s)
+}
+
 // indexIsComplete reports whether the index describes the whole buffer, which
 // is the question every caller that needs a line number for a far-away offset
 // actually wants answered.
