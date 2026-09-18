@@ -120,3 +120,40 @@ func TestReadColorerTypeSettings(t *testing.T) {
 		t.Errorf("default settings %+v", got)
 	}
 }
+
+// default-back alone must reach the attribute without dragging a foreground
+// colour along, and a value that does not parse must leave the colour unset
+// rather than turn it into a real black.
+func TestColorerTypeSettings_BackWithoutFore(t *testing.T) {
+	marker := vtui.SetRGBFore(0, 0xC0FFEE)
+	s := colorerTypeSettings{back: 0x202020, backSet: true}
+	attr := s.baseAttr(marker)
+	if got := vtui.GetRGBBack(attr); got != 0x202020 {
+		t.Errorf("base back %#x, want 0x202020", got)
+	}
+	if got := vtui.GetRGBFore(attr); got != 0xC0FFEE {
+		t.Errorf("an unset foreground was changed to %#x", got)
+	}
+}
+
+func TestColorerParamHexValue(t *testing.T) {
+	for _, tc := range []struct {
+		in    string
+		want  int
+		valid bool
+	}{
+		{in: "#102030", want: 0x102030, valid: true},
+		{in: "0xFF", want: 0xff, valid: true},
+		{in: "ff", want: 0xff, valid: true},
+		{in: ""},
+		{in: "zz"},
+		// Longer than a uint32 takes: ParseUint refuses it, and a colour that
+		// cannot be read stays unset.
+		{in: "1122334455"},
+	} {
+		got, valid := colorerParamHexValue(tc.in)
+		if valid != tc.valid || (valid && got != tc.want) {
+			t.Errorf("colorerParamHexValue(%q) = %#x, %v; want %#x, %v", tc.in, got, valid, tc.want, tc.valid)
+		}
+	}
+}

@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
-	"runtime/trace"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +25,6 @@ import (
 	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/plughost"
-	"github.com/unxed/f4/internal/stallwatch"
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/update"
@@ -707,26 +705,16 @@ see in vtinput project: https://github.com/unxed/vtinput
 		_ = pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
 	}
-	if traceFile != "" {
-		// #nosec G703 -- as for --cpuprofile: the path is the one asked for.
-		f, err := os.Create(traceFile)
+	if traceFile != "" || stallLimit > 0 {
+		stopDiagnostics, notice, err := armDiagnostics(traceFile, stallLimit, filepath.Join(config.GetF4ConfigDir(), "crashes"))
 		if err != nil {
 			panic(err)
 		}
-		if err := trace.Start(f); err != nil {
-			panic(err)
+		defer stopDiagnostics()
+		if notice != "" {
+			// Said on the way past, before the UI takes the screen.
+			fmt.Println(notice)
 		}
-		defer trace.Stop()
-	}
-	if stallLimit > 0 {
-		logPath := stallwatch.Start(filepath.Join(config.GetF4ConfigDir(), "crashes"), stallLimit)
-		bindFrameWatch()
-		// Said on the way past, before the UI takes the screen: the profile
-		// directory depends on whether this executable found a portable
-		// profile beside it, and a watchdog nobody can find the output of is
-		// no use. The file itself says the same thing, for a start that
-		// scrolled by.
-		fmt.Printf("stall watchdog armed at %v; writing to %s\n", stallLimit, logPath)
 	}
 
 	// Settings.ini supplies whatever this run did not (issue #601). The

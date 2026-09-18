@@ -97,3 +97,42 @@ func clusterColumnsForTest(s string) int {
 	vtui.ForEachCluster(s, func(_ string, width, _ int) { cols += width })
 	return cols
 }
+
+// A tab is counted as one column, not its expansion, so the clip can only err
+// towards taking more of the line than the viewport needs.
+func TestEditorRenderColumns_CountsATabAsOneColumn(t *testing.T) {
+	if got := editorRenderColumns("	a"); got != 2 {
+		t.Errorf("columns of a tab and a letter = %d, want 2", got)
+	}
+	// A zero-width cluster occupies no column and must not be counted as one.
+	if got := editorRenderColumns("ab"); got != 2 {
+		t.Errorf("columns of two letters = %d, want 2", got)
+	}
+}
+
+// The first guess at how many bytes cover the viewport is deliberately
+// generous, but text that is mostly combining marks can still fall short of
+// it, so the window doubles until the columns are covered.
+func TestEditorRenderClip_GrowsTheWindowUntilTheColumnsAreCovered(t *testing.T) {
+	const width = 64
+	// Each visible letter carries five combining acutes: twenty-odd bytes per
+	// column, far past the four the first guess allows for.
+	line := strings.Repeat("á́́́́", 4000)
+
+	clipped := editorRenderClip(line, width)
+	if cols := editorRenderColumns(clipped); cols < width {
+		t.Errorf("the clip covers %d columns, short of %d", cols, width)
+	}
+	if len(clipped) >= len(line) {
+		t.Error("the whole line was taken when a prefix would do")
+	}
+}
+
+// A line shorter than the viewport has nothing to clip, and a fragment the
+// caller has already cut to size must come back whole.
+func TestEditorRenderClip_LeavesWhatAlreadyFits(t *testing.T) {
+	short := strings.Repeat("x", 40)
+	if got := editorRenderClip(short, 200); got != short {
+		t.Errorf("a line inside the viewport was clipped to %d bytes", len(got))
+	}
+}

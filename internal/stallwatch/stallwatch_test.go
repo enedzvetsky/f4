@@ -144,3 +144,55 @@ func TestFrame_IsInertWhenDisarmed(t *testing.T) {
 	}
 	done()
 }
+
+// A watchdog whose directory cannot be made must not claim to be armed, or
+// the user waits for a freeze and collects nothing.
+func TestStart_RefusesADirectoryItCannotWrite(t *testing.T) {
+	blocked := filepath.Join(t.TempDir(), "in-the-way")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := Start(filepath.Join(blocked, "crashes"), 50*time.Millisecond); got != "" {
+		t.Errorf("Start reported %q for a directory it cannot make", got)
+	}
+	if Enabled() {
+		t.Error("the watchdog armed on a directory it cannot write")
+	}
+	// The failed path must not become where dumps are written. Anything a
+	// previous run left is inert: the watchdog is disarmed, so Frame does
+	// nothing at all.
+	if strings.Contains(dumpDir, "in-the-way") || strings.Contains(logPath, "in-the-way") {
+		t.Errorf("Start pointed at the directory it could not make: dumpDir=%q logPath=%q", dumpDir, logPath)
+	}
+	if done := Frame("test.afterFailedStart"); done != nil {
+		done()
+	}
+}
+
+// A limit of zero is a run that did not ask for the watchdog.
+func TestStart_ZeroLimitDoesNotArm(t *testing.T) {
+	if got := Start(t.TempDir(), 0); got != "" {
+		t.Errorf("Start(0) reported %q", got)
+	}
+	if Enabled() {
+		t.Error("a zero limit armed the watchdog")
+	}
+}
+
+// A freeze that repeats writes the same stacks; the point is to read them,
+// not to collect them.
+func TestDump_StopsAtMaxDumps(t *testing.T) {
+	dir := t.TempDir()
+	Start(dir, 30*time.Millisecond)
+	t.Cleanup(func() { enabled.Store(false) })
+
+	for i := 0; i < MaxDumps+5; i++ {
+		func() {
+			defer Frame("test.slow")()
+			time.Sleep(60 * time.Millisecond)
+		}()
+	}
+	if got := len(dumpsIn(t, dir)); got != MaxDumps {
+		t.Errorf("wrote %d dumps, want the cap of %d", got, MaxDumps)
+	}
+}
