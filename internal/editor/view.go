@@ -1879,16 +1879,6 @@ DoneRendering:
 			ev.scrollBar.Show(scr)
 		}
 	}
-
-	// With wrapping on, the document's height is only known once every line
-	// has been laid out, and the engine does that a slice at a time rather
-	// than stalling the frame that first asks -- see GetTotalVisualRows. Until
-	// it has caught up the scroll bar is working off an underestimate, so run
-	// a slice and ask for the next frame, the same way the highlight walker
-	// keeps itself going. Each slice moves the cache on, so this ends.
-	if !ev.Engine.AdvanceRowCount() {
-		vtui.FrameManager.Redraw()
-	}
 }
 
 // VetoActionKey reports modal input states in which the editor must see
@@ -2800,14 +2790,35 @@ func editorRenderClip(text string, maxCols int) string {
 		if take >= len(text) {
 			break
 		}
-		cols := 0
-		vtui.ForEachCluster(text[:take], func(_ string, width, _ int) { cols += width })
-		if cols >= maxCols {
+		if editorRenderColumns(text[:take]) >= maxCols {
 			return text[:take]
 		}
 		take *= 2
 	}
 	return text
+}
+
+// editorRenderColumns counts the columns the renderer will give text, using
+// the renderer's own cluster boundaries. vtui's UAX #29 segmentation is not
+// the same one: it splits an Indic virama sequence that the editor joins into
+// a single cluster of a single column, so counting with it claims columns the
+// renderer will not paint and the clip comes back too short -- the right of
+// the viewport then shows background where there is text.
+//
+// A tab counts as one column rather than its expansion, which can only make
+// the count low; the clip errs towards taking more of the line, never less.
+func editorRenderColumns(text string) int {
+	cols := 0
+	for _, cluster := range editorVisualClusters(text) {
+		if cluster.text == "\t" {
+			cols++
+			continue
+		}
+		if _, width := vtui.SanitizeCluster(cluster.text); width > 0 {
+			cols += width
+		}
+	}
+	return cols
 }
 
 func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, SelActive bool, selMin, selMax int, syntax []uint64, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
@@ -2843,7 +2854,7 @@ func (ev *EditorView) fillCellsWithLinks(target []vtui.CharInfo, data []byte, de
 		}
 		var w int
 		displayText, sanitizedWidth := vtui.SanitizeCluster(cluster.text)
-		if cluster.text == "\t" {
+		if cluster.text == "	" {
 			w = tabSize - (visualCol % tabSize)
 			displayText = " "
 			if ev.ShowWhitespaces {

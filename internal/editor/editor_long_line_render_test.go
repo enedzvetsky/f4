@@ -38,6 +38,29 @@ func TestFillCells_StopsAtTheRightEdgeOfTheViewport(t *testing.T) {
 	}
 }
 
+// The clip has to count columns the way the renderer counts them. vtui's
+// UAX #29 segmentation splits an Indic virama sequence that the editor joins
+// into one cluster of one column, so counting with it claimed columns the
+// renderer would not paint: the clip came back short and the right of the
+// viewport showed background where there was text.
+func TestEditorRenderClip_CountsColumnsAsTheRendererDoes(t *testing.T) {
+	ev := &EditorView{TabSize: 8}
+	const width = 200
+	line := strings.Repeat("क्क्क्क्क्क्ष ", 600)
+
+	clipped := editorRenderClip(line, width)
+	if cols := editorRenderColumns(clipped); cols < width {
+		t.Errorf("the clip covers %d columns, short of the %d the viewport shows", cols, width)
+	}
+
+	// What the renderer then builds has to fill the viewport, which is the
+	// property the clip exists to preserve.
+	cells := ev.fillCellsWithLinks(nil, []byte(line), 0, 0, 0, false, 0, 0, nil, nil, 0, width, false, -1, 0, 0, 0)
+	if len(cells) < width {
+		t.Errorf("built %d cells for a %d column viewport; the rest of the row is left blank", len(cells), width)
+	}
+}
+
 func TestEditorRenderClip(t *testing.T) {
 	long := strings.Repeat("x", 50000)
 

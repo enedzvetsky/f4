@@ -495,27 +495,31 @@ func Main() {
 		case "--trace":
 			if flagVal != "" {
 				traceFile = flagVal
-			} else if i+1 < len(os.Args) {
+			} else if i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {
 				traceFile = os.Args[i+1]
 				i++
 			}
 		case "--stall-watchdog":
-			raw := flagVal
-			if raw == "" && i+1 < len(os.Args) {
-				raw = os.Args[i+1]
-				i++
+			// The duration is optional, so the next word is taken only when it
+			// is one: "f4 --stall-watchdog notes.txt" opens notes.txt with the
+			// watchdog on its default, rather than failing on a filename that is
+			// not a duration.
+			stallLimit = 250 * time.Millisecond
+			if flagVal != "" {
+				d, err := time.ParseDuration(flagVal)
+				if err != nil {
+					// stdout, like --version and --help: f4 has already taken
+					// stderr over for its own log by the time a switch is read.
+					fmt.Printf("--stall-watchdog: %v\n", err)
+					os.Exit(2)
+				}
+				stallLimit = d
+			} else if i+1 < len(os.Args) {
+				if d, err := time.ParseDuration(os.Args[i+1]); err == nil {
+					stallLimit = d
+					i++
+				}
 			}
-			if raw == "" {
-				raw = "250ms"
-			}
-			d, err := time.ParseDuration(raw)
-			if err != nil {
-				// stdout, like --version and --help: f4 has already taken stderr
-				// over for its own log by the time a switch is read.
-				fmt.Printf("--stall-watchdog: %v\n", err)
-				os.Exit(2)
-			}
-			stallLimit = d
 		case "--new-plugin":
 			pluginName := flagVal
 			if pluginName == "" && i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {

@@ -90,16 +90,36 @@ func Start(dir string, limit time.Duration) string {
 	if limit <= 0 {
 		return ""
 	}
+	// The directory has to work before anything claims to be armed: a
+	// watchdog whose evidence cannot be written is worse than none, because
+	// the user waits for a freeze and collects nothing.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
 	dumpDir = dir
 	logPath = filepath.Join(dir, "stall-watchdog.log")
 	threshold.Store(int64(limit))
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// Written before anything else can go wrong, so that the file's existence
+	// is proof the switch was understood and names the folder to look in.
+	// A fresh run starts from nothing: leftover state would let the gap
+	// detector fire on a stretch of work that belongs to the previous one.
+	mu.Lock()
+	dumped = 0
+	mu.Unlock()
+	openedAt.Store(0)
+	lastEnd.Store(0)
+	tightRun.Store(0)
+	burstStart.Store(0)
+	burstCount.Store(0)
+	reported.Store(false)
+	gapReported.Store(false)
+	logf("armed at %s, limit %v, pid %d", time.Now().Format(time.RFC3339), limit, os.Getpid())
+	if _, err := os.Stat(logPath); err != nil {
+		dumpDir, logPath = "", ""
+		threshold.Store(0)
 		return ""
 	}
-	// Written before anything can go wrong, so that the file's existence is
-	// proof the switch was understood and names the folder to look in.
-	logf("armed at %s, limit %v, pid %d", time.Now().Format(time.RFC3339), limit, os.Getpid())
 
 	enabled.Store(true)
 	go watch()
@@ -121,10 +141,13 @@ func Frame(name string) func() {
 		return func() {}
 	}
 	now := time.Now()
+	// The name goes up before the CAS that publishes the unit, or the watcher
+	// can sample between the two and head its dump with the name of the unit
+	// before this one.
+	openName.Store(name)
 	if !openedAt.CompareAndSwap(0, now.UnixNano()) {
 		return func() {}
 	}
-	openName.Store(name)
 
 	if prev := lastEnd.Load(); prev != 0 {
 		gap := now.Sub(time.Unix(0, prev))
@@ -167,7 +190,13 @@ func Frame(name string) func() {
 func watch() {
 	for {
 		limit := time.Duration(threshold.Load())
+		if !enabled.Load() || limit <= 0 {
+			return
+		}
 		time.Sleep(limit / 4)
+		if !enabled.Load() {
+			return
+		}
 
 		if started := openedAt.Load(); started != 0 {
 			if !reported.Load() {
