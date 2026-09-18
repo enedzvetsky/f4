@@ -107,3 +107,60 @@ func argAfter(args []string, i int) string {
 	}
 	return ""
 }
+
+// diagnosticFlags is what a command line asked of the diagnostics, gathered as
+// the switches are read.
+//
+// It is a type so that both halves -- reading the switches and acting on them
+// -- sit outside Main. No test runs Main: it wants a terminal, so every line
+// inside it is a line nothing checks.
+type diagnosticFlags struct {
+	tracePath  string
+	stallLimit time.Duration
+}
+
+// apply reads one diagnostic switch and reports how many of the words after it
+// were taken. The switches are read in a loop over the command line and only
+// that loop knows where it is, so the count goes back rather than the index
+// coming in.
+func (d *diagnosticFlags) apply(name, flagVal, next string) (consumed int, err error) {
+	switch name {
+	case "--trace":
+		path, tookNext := traceFileArg(flagVal, next)
+		d.tracePath = path
+		if tookNext {
+			return 1, nil
+		}
+	case "--stall-watchdog":
+		limit, tookNext, err := stallWatchdogLimit(flagVal, next)
+		if err != nil {
+			return 0, err
+		}
+		d.stallLimit = limit
+		if tookNext {
+			return 1, nil
+		}
+	}
+	return 0, nil
+}
+
+// wanted reports whether the command line asked for any of this at all.
+func (d diagnosticFlags) wanted() bool {
+	return d.tracePath != "" || d.stallLimit > 0
+}
+
+// arm starts what was asked for and returns the function that closes it down,
+// having told the user what it did. A path that cannot be written is fatal
+// here: the run was started to collect evidence, and quietly collecting none
+// is worse than not starting at all.
+func (d diagnosticFlags) arm(crashesDir string) func() {
+	stop, notice, err := armDiagnostics(d.tracePath, d.stallLimit, crashesDir)
+	if err != nil {
+		panic(err)
+	}
+	if notice != "" {
+		// Said on the way past, before the UI takes the screen.
+		fmt.Println(notice)
+	}
+	return stop
+}

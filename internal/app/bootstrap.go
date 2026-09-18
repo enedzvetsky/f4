@@ -392,8 +392,7 @@ func Main() {
 	vtui.ConfigDiskLogging(false)
 	var serverPath, clientPath string
 	var cpuprofile string
-	var traceFile string
-	var stallLimit time.Duration
+	var diagFlags diagnosticFlags
 	var guiMode bool
 	var guiBackend string
 	var guiBackendGiven bool
@@ -490,34 +489,15 @@ func Main() {
 				cpuprofile = os.Args[i+1]
 				i++
 			}
-		case "--trace":
-			if flagVal != "" {
-				traceFile = flagVal
-			} else if i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {
-				traceFile = os.Args[i+1]
-				i++
+		case "--trace", "--stall-watchdog":
+			consumed, err := diagFlags.apply(flagName, flagVal, argAfter(os.Args, i))
+			if err != nil {
+				// stdout, like --version and --help: f4 has already taken stderr
+				// over for its own log by the time a switch is read.
+				fmt.Printf("%s: %v\n", flagName, err)
+				os.Exit(2)
 			}
-		case "--stall-watchdog":
-			// The duration is optional, so the next word is taken only when it
-			// is one: "f4 --stall-watchdog notes.txt" opens notes.txt with the
-			// watchdog on its default, rather than failing on a filename that is
-			// not a duration.
-			stallLimit = 250 * time.Millisecond
-			if flagVal != "" {
-				d, err := time.ParseDuration(flagVal)
-				if err != nil {
-					// stdout, like --version and --help: f4 has already taken
-					// stderr over for its own log by the time a switch is read.
-					fmt.Printf("--stall-watchdog: %v\n", err)
-					os.Exit(2)
-				}
-				stallLimit = d
-			} else if i+1 < len(os.Args) {
-				if d, err := time.ParseDuration(os.Args[i+1]); err == nil {
-					stallLimit = d
-					i++
-				}
-			}
+			i += consumed
 		case "--new-plugin":
 			pluginName := flagVal
 			if pluginName == "" && i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {
@@ -705,16 +685,9 @@ see in vtinput project: https://github.com/unxed/vtinput
 		_ = pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
 	}
-	if traceFile != "" || stallLimit > 0 {
-		stopDiagnostics, notice, err := armDiagnostics(traceFile, stallLimit, filepath.Join(config.GetF4ConfigDir(), "crashes"))
-		if err != nil {
-			panic(err)
-		}
+	if diagFlags.wanted() {
+		stopDiagnostics := diagFlags.arm(filepath.Join(config.GetF4ConfigDir(), "crashes"))
 		defer stopDiagnostics()
-		if notice != "" {
-			// Said on the way past, before the UI takes the screen.
-			fmt.Println(notice)
-		}
 	}
 
 	// Settings.ini supplies whatever this run did not (issue #601). The
