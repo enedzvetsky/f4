@@ -2,6 +2,8 @@ package editor
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -63,7 +65,17 @@ func TestColorerSetFileType_RehighlightsAsTheType(t *testing.T) {
 	theme.SetDefaultF4Palette()
 	user := t.TempDir()
 	writeUserHRC(t, user, "pairtest.hrc", pairTestHRC)
-	src := ColorerSource{ConfigsDir: checkConfigs(t), UserHRC: user}
+
+	// The type carries parameters of its own, and the worker is supposed to
+	// hand them to the UI along with the type. One is given to pairtest here
+	// so that arrival is visible: a parameter nobody set is worth the zero
+	// value, which is also what settings that were never adopted are worth.
+	settingsPath := filepath.Join(t.TempDir(), "hrcsettings.xml")
+	if err := os.WriteFile(settingsPath, []byte(`<hrc-settings><prototype name="pairtest"><param name="maxlinelength" value="80"/></prototype></hrc-settings>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	src := ColorerSource{ConfigsDir: checkConfigs(t), UserHRC: user, UserHRCSettings: settingsPath}
 
 	session, err := acquireCancelableColorerSession(context.Background(), src)
 	if err != nil {
@@ -99,7 +111,7 @@ func TestColorerSetFileType_RehighlightsAsTheType(t *testing.T) {
 	if pairs, _ := ch.cachedPairs(0); len(pairs) != 1 || !pairs[0].Opens {
 		t.Fatalf("pairs as pairtest: %+v", pairs)
 	}
-	if ch.typeSettings.fore != -1 || ch.typeSettings.back != -1 {
+	if ch.typeSettings.maxLineLength != 80 {
 		t.Errorf("type settings %+v were not adopted from the worker", ch.typeSettings)
 	}
 

@@ -24,7 +24,7 @@ func TestColorerParamIntAndHex(t *testing.T) {
 }
 
 func TestColorerTypeSettingsHelpers(t *testing.T) {
-	s := colorerTypeSettings{maxLineLength: 3, showCross: "vertical", fore: 0x112233, back: -1}
+	s := colorerTypeSettings{maxLineLength: 3, showCross: "vertical", fore: 0x112233, foreSet: true}
 	if got := s.truncate("aЖbcd"); got != "aЖb" {
 		t.Errorf("truncate = %q", got)
 	}
@@ -37,6 +37,14 @@ func TestColorerTypeSettingsHelpers(t *testing.T) {
 	attr := s.baseAttr(0)
 	if vtui.GetRGBFore(attr) != 0x112233 {
 		t.Errorf("base fore %#x", vtui.GetRGBFore(attr))
+	}
+
+	// The zero value is what a highlighter holds until its session has been
+	// read, and it must leave the editor's own colours alone rather than
+	// force RGB 000000 on both halves of the attribute.
+	marker := vtui.SetRGBBack(vtui.SetRGBFore(0, 0xC0FFEE), 0x123456)
+	if got := (colorerTypeSettings{}).baseAttr(marker); got != marker {
+		t.Errorf("zero settings changed the base attribute: %#x -> %#x", marker, got)
 	}
 }
 
@@ -100,7 +108,7 @@ func TestReadColorerTypeSettings(t *testing.T) {
 		t.Fatalf("SetFileType: %v, %v", ok, err)
 	}
 	got := readColorerTypeSettings(session)
-	want := colorerTypeSettings{maxLineLength: 80, plainEOL: true, showCross: "both", fore: -1, back: 0x202020}
+	want := colorerTypeSettings{maxLineLength: 80, plainEOL: true, showCross: "both", back: 0x202020, backSet: true}
 	if got != want {
 		t.Errorf("settings %+v, want %+v", got, want)
 	}
@@ -108,7 +116,7 @@ func TestReadColorerTypeSettings(t *testing.T) {
 	if ok, _ := session.SetFileType("default"); !ok {
 		t.Fatal("SetFileType(default)")
 	}
-	if got := readColorerTypeSettings(session); got != (colorerTypeSettings{maxLineLength: 5000, showCross: "none", fore: -1, back: -1}) {
+	if got := readColorerTypeSettings(session); got != (colorerTypeSettings{maxLineLength: 5000, showCross: "none"}) {
 		t.Errorf("default settings %+v", got)
 	}
 }

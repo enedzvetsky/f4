@@ -64,6 +64,10 @@ var architectureLayers = map[string]int{
 	// all four without putting one of them under another.
 	"internal/ini": 0,
 
+	// The frame watchdog: a leaf that imports nothing of ours, so any view
+	// can mark its frame and the root can arm it from a command line switch.
+	"internal/stallwatch": 0,
+
 	// The shared primitives: a notification channel and the history store.
 	// Both are leaves and both take what they cannot reach as a seam —
 	// history.SamePath and the config directory are set by the root.

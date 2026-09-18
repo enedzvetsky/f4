@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"runtime/trace"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/plughost"
+	"github.com/unxed/f4/internal/stallwatch"
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/update"
@@ -392,6 +394,8 @@ func Main() {
 	vtui.ConfigDiskLogging(false)
 	var serverPath, clientPath string
 	var cpuprofile string
+	var traceFile string
+	var stallLimit time.Duration
 	var guiMode bool
 	var guiBackend string
 	var guiBackendGiven bool
@@ -488,6 +492,30 @@ func Main() {
 				cpuprofile = os.Args[i+1]
 				i++
 			}
+		case "--trace":
+			if flagVal != "" {
+				traceFile = flagVal
+			} else if i+1 < len(os.Args) {
+				traceFile = os.Args[i+1]
+				i++
+			}
+		case "--stall-watchdog":
+			raw := flagVal
+			if raw == "" && i+1 < len(os.Args) {
+				raw = os.Args[i+1]
+				i++
+			}
+			if raw == "" {
+				raw = "250ms"
+			}
+			d, err := time.ParseDuration(raw)
+			if err != nil {
+				// stdout, like --version and --help: f4 has already taken stderr
+				// over for its own log by the time a switch is read.
+				fmt.Printf("--stall-watchdog: %v\n", err)
+				os.Exit(2)
+			}
+			stallLimit = d
 		case "--new-plugin":
 			pluginName := flagVal
 			if pluginName == "" && i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {
@@ -584,6 +612,13 @@ The following switches may be used in the command line:
  --attached             Force run in Attached-mode
  --client [clientPath]
  --cpuprofile [cpuprofile]
+ --trace [file]         Write a runtime execution trace, which records GC
+                         pauses, blocking syscalls and scheduling as well as
+                         CPU; read it with "go tool trace"
+ --stall-watchdog [d]   Write every goroutine's stack into the profile's
+                         crashes folder whenever one UI frame takes longer
+                         than d (default 250ms). Answers what a freeze was
+                         waiting on, which a CPU profile cannot.
  --debug                Log to profile logs/debug.log (equivalent to --log=1)
  --dump-screen-after N  Auto-run Debug.ScreenDump N seconds after startup
                          (bypasses hotkeys entirely -- useful under Wine
@@ -667,6 +702,27 @@ see in vtinput project: https://github.com/unxed/vtinput
 		}
 		_ = pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
+	}
+	if traceFile != "" {
+		// #nosec G703 -- as for --cpuprofile: the path is the one asked for.
+		f, err := os.Create(traceFile)
+		if err != nil {
+			panic(err)
+		}
+		if err := trace.Start(f); err != nil {
+			panic(err)
+		}
+		defer trace.Stop()
+	}
+	if stallLimit > 0 {
+		logPath := stallwatch.Start(filepath.Join(config.GetF4ConfigDir(), "crashes"), stallLimit)
+		bindFrameWatch()
+		// Said on the way past, before the UI takes the screen: the profile
+		// directory depends on whether this executable found a portable
+		// profile beside it, and a watchdog nobody can find the output of is
+		// no use. The file itself says the same thing, for a start that
+		// scrolled by.
+		fmt.Printf("stall watchdog armed at %v; writing to %s\n", stallLimit, logPath)
 	}
 
 	// Settings.ini supplies whatever this run did not (issue #601). The

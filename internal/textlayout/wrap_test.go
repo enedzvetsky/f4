@@ -800,3 +800,115 @@ func TestWrapEngine_NoWrapCacheInvalidatedOnEdit(t *testing.T) {
 		t.Errorf("width after edit = %d, want 13", got)
 	}
 }
+
+// A wrapped document's height is only known once every line has been laid
+// out, and the editor asks for it on every frame — for the scroll bar, and to
+// clamp PgDn. On a large file that used to be one stall of a second or more,
+// landing mid-scroll on whichever frame first saw the finished line index.
+// GetTotalVisualRows now lays the document out a slice at a time and estimates
+// the rest, so no single call carries the whole cost.
+func TestWrapEngine_TotalVisualRowsIsSlicedAndConverges(t *testing.T) {
+	const lines = 120000
+	var sb strings.Builder
+	for i := 0; i < lines; i++ {
+		sb.WriteString("the quick brown fox jumps over the lazy dog and keeps on running\n")
+	}
+	Pt := piecetable.New([]byte(sb.String()))
+	Li := piecetable.NewLineIndex()
+	Li.Rebuild(Pt)
+
+	we := NewWrapEngine(Pt, Li)
+	we.SetWidth(20)
+
+	first := time.Now()
+	total := we.GetTotalVisualRows()
+	firstCall := time.Since(first)
+
+	// Four times the budget: enough headroom for a loaded machine, still far
+	// from the whole-document layout this replaced.
+	if limit := 4 * rowCountSliceBudget; firstCall > limit {
+		t.Errorf("first GetTotalVisualRows took %v, over the %v a sliced layout should cost", firstCall, limit)
+	}
+	if we.RowCountComplete() {
+		t.Skip("the whole document was laid out inside one slice; nothing to converge")
+	}
+
+	// The estimate counts one row for each line not laid out yet, so it is
+	// always short of the truth: a caller clamping a scroll position against
+	// it can never be sent past the end of the document.
+	if total < Li.LineCount() {
+		t.Errorf("estimated total %d is below the line count %d", total, Li.LineCount())
+	}
+
+	previous := total
+	calls := 1
+	for !we.RowCountComplete() {
+		calls++
+		if calls > 10000 {
+			t.Fatalf("row count cache did not converge after %d calls", calls)
+		}
+		got := we.GetTotalVisualRows()
+		if got < previous {
+			t.Fatalf("total went backwards: %d after %d", got, previous)
+		}
+		previous = got
+	}
+
+	exact := we.GetTotalVisualRows()
+	if exact < total {
+		t.Errorf("exact total %d is below the estimate %d it replaced", exact, total)
+	}
+	// Every line of this document wraps into more than one row, so the
+	// estimate really was an estimate.
+	if exact <= Li.LineCount() {
+		t.Errorf("exact total %d, want more than one row per line (%d lines)", exact, Li.LineCount())
+	}
+}
+
+// One logical line of several megabytes — a log with a dumped payload or a
+// base64 blob on one line — used to be laid out in full the first time it
+// scrolled into view: a cluster per grapheme, millions of them, inside that
+// one frame. Only a screenful of columns of it is ever drawn.
+func TestWrapEngine_LongLineLayoutIsCapped(t *testing.T) {
+	const payload = 3 << 20
+	text := "short line before\n" + strings.Repeat("x", payload) + "\nshort line after\n"
+	Pt := piecetable.New([]byte(text))
+	Li := piecetable.NewLineIndex()
+	Li.Rebuild(Pt)
+
+	we := NewWrapEngine(Pt, Li)
+	we.ToggleWrap(false)
+	we.SetWidth(120)
+
+	start := time.Now()
+	frags := we.GetFragments(1)
+	elapsed := time.Since(start)
+
+	if len(frags) != 1 {
+		t.Fatalf("got %d fragments for an unwrapped line, want 1", len(frags))
+	}
+	laidOut := frags[0].ByteOffsetEnd - frags[0].ByteOffsetStart
+	if laidOut > maxLaidOutLineBytes {
+		t.Errorf("laid out %d bytes of the line, over the %d cap", laidOut, maxLaidOutLineBytes)
+	}
+	// Generous next to the cost of the whole line, which was over a second.
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("laying the line out took %v; the cap should keep it far under that", elapsed)
+	}
+
+	// The lines around it are untouched by the cap.
+	if before := we.GetFragments(0); len(before) != 1 || before[0].ByteOffsetEnd-before[0].ByteOffsetStart != len("short line before") {
+		t.Errorf("line before the long one: %+v", before)
+	}
+	after := we.GetFragments(2)
+	if len(after) != 1 || after[0].ByteOffsetEnd-after[0].ByteOffsetStart != len("short line after") {
+		t.Errorf("line after the long one: %+v", after)
+	}
+
+	// An offset past the cap has nowhere of its own to sit, so it snaps to the
+	// end of what was laid out rather than reporting column zero.
+	lineStart := Li.GetLineOffset(1)
+	if _, col := we.LogicalToVisual(lineStart + payload); col != frags[0].VisualWidth {
+		t.Errorf("offset past the cap gave column %d, want the capped width %d", col, frags[0].VisualWidth)
+	}
+}

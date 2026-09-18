@@ -3,6 +3,7 @@ package textlayout
 import (
 	"math"
 	"sort"
+	"time"
 
 	"github.com/unxed/f4/internal/piecetable"
 	"github.com/unxed/vtui"
@@ -77,6 +78,24 @@ type noWrapLayout struct {
 // eight bytes per entry this holds the cache to about 8 MB; going over drops it
 // wholesale, which costs one rescan of the lines still on screen.
 const noWrapCacheBudget = 1 << 20
+
+// maxLaidOutLineBytes is how much of one logical line is laid out. It matches
+// the editor's own long-line limit -- the highlighter cuts a line at 64 KB and
+// word wrap refuses a line longer than that -- so a line past it is already
+// one the editor only partly describes. An offset beyond the cap snaps to the
+// end of the laid-out part, as LogicalToVisual already does for capped lines.
+const maxLaidOutLineBytes = 64 * 1024
+
+const (
+	// rowCountSliceBudget is the longest one GetTotalVisualRows call may
+	// spend laying lines out. It is the stall the user can feel, so it is
+	// kept well inside one frame; how many lines fit into it is whatever the
+	// document's lines cost.
+	rowCountSliceBudget = 4 * time.Millisecond
+	// rowCountClockStride is how many lines pass between two clock readings
+	// inside a slice.
+	rowCountClockStride = 64
+)
 
 // logicalTextClusters keeps zoin-bot's grapheme boundaries in document order.
 func logicalTextClusters(text string) []visualCluster {
@@ -428,11 +447,17 @@ func (we *WrapEngine) GetFragments(logLineIdx int) []LineFragment {
 	endOffset := we.Pt.Size()
 	if logLineIdx+1 < we.Li.LineCount() {
 		endOffset = we.Li.GetLineOffset(logLineIdx + 1)
-	} else {
-		// If this is the unindexed tail, cap the processing to prevent loading gigabytes
-		if endOffset-startOffset > 64*1024 {
-			endOffset = startOffset + 64*1024
-		}
+	}
+	// The cap covers every line, not only the unindexed tail it was first
+	// written for. The layout below builds a cluster for every grapheme of
+	// the line, and a log with a dumped payload on one line makes that
+	// several million of them -- more than a second inside the frame that
+	// first scrolled the line into view, on a file that is otherwise smooth.
+	// Only a screenful of columns is ever drawn, and the rest of the editor
+	// has stopped at this same length all along: the highlighter cuts a line
+	// here, and word wrap turns itself off past it.
+	if endOffset-startOffset > maxLaidOutLineBytes {
+		endOffset = startOffset + maxLaidOutLineBytes
 	}
 
 	we.tmpBuf = we.tmpBuf[:0]
@@ -601,7 +626,17 @@ func (we *WrapEngine) GetFragments(logLineIdx int) []LineFragment {
 	return fragments
 }
 
+// ensureRowCountCache lays out every logical line up to until, however long
+// that takes. A caller asking where one particular line starts needs the exact
+// answer, so this one does not stop early.
 func (we *WrapEngine) ensureRowCountCache(until int) {
+	we.fillRowCountCache(until, 0)
+}
+
+// fillRowCountCache is ensureRowCountCache with an optional wall-clock budget.
+// With one it lays out as far as it gets and leaves the rest to a later call,
+// which only the document-wide total may settle for -- see GetTotalVisualRows.
+func (we *WrapEngine) fillRowCountCache(until int, budget time.Duration) {
 	if !we.wordWrap {
 		return
 	}
@@ -636,25 +671,88 @@ func (we *WrapEngine) ensureRowCountCache(until int) {
 		currentOffset = we.rowOffsets[start-1] + len(we.GetFragments(start-1))
 	}
 
+	var deadline time.Time
+	if budget > 0 {
+		deadline = time.Now().Add(budget)
+	}
+	reached := we.validUntil
 	for i := start; i <= until; i++ {
 		we.rowOffsets[i] = currentOffset
 		currentOffset += len(we.GetFragments(i))
+		reached = i
+		// The clock is read every rowCountClockStride lines rather than every
+		// line: laying one line out is microseconds, and time.Now next to it
+		// would be a measurable share of the work.
+		if budget > 0 && i%rowCountClockStride == 0 && time.Now().After(deadline) {
+			break
+		}
 	}
-	if until > we.validUntil {
-		we.validUntil = until
+	if reached > we.validUntil {
+		we.validUntil = reached
 	}
 	if we.validUntil == lineCount-1 {
 		we.totalRows = currentOffset
 	}
 }
 
+// RowCountComplete reports whether rowOffsets already describes every line, so
+// that GetTotalVisualRows is exact rather than an estimate. Without wrapping
+// there is nothing to lay out and the answer is always yes.
+func (we *WrapEngine) RowCountComplete() bool {
+	if !we.wordWrap {
+		return true
+	}
+	lineCount := we.Li.LineCount()
+	return we.validUntil == lineCount-1 && len(we.rowOffsets) == lineCount
+}
+
+// estimatedTotalRows stands in for the document's visual height while the
+// row-count cache is still catching up: the rows already laid out, plus one
+// for every line that has not been. A line never takes fewer than one row, so
+// this is short of the truth and never past it -- callers clamp a scroll
+// position against this number, and one that ran past the end would send the
+// lazy row lookups it feeds back into the whole-document layout the budget
+// exists to avoid.
+func (we *WrapEngine) estimatedTotalRows() int {
+	lineCount := we.Li.LineCount()
+	if we.validUntil < 0 || we.validUntil >= lineCount {
+		return lineCount
+	}
+	laidOut := we.rowOffsets[we.validUntil] + len(we.GetFragments(we.validUntil))
+	return laidOut + (lineCount - 1 - we.validUntil)
+}
+
 // GetTotalVisualRows возвращает общее количество визуальных строк в документе.
+//
+// Wrapping makes that number cost a layout of the whole document, and the
+// editor asks for it on every frame -- for the scroll bar, and to clamp PgDn.
+// On a large file the first frame after the background line index finishes
+// therefore used to stall for a second or more, in the middle of a scroll.
+// So the layout is done a slice at a time and the tail is estimated until it
+// catches up: the estimate is never above the truth, and
+// RowCountComplete says when it has stopped being one.
 func (we *WrapEngine) GetTotalVisualRows() int {
 	if !we.wordWrap {
 		return we.Li.LineCount()
 	}
-	we.ensureRowCountCache(we.Li.LineCount() - 1)
-	return we.totalRows
+	we.fillRowCountCache(we.Li.LineCount()-1, rowCountSliceBudget)
+	if we.RowCountComplete() {
+		return we.totalRows
+	}
+	return we.estimatedTotalRows()
+}
+
+// AdvanceRowCount lays out one more slice of the row-count cache and reports
+// whether it is now complete. A caller drawing a wrapped document calls it
+// once a frame, so the document's height settles over a few frames without any
+// one of them paying for all of it. It always makes progress while there is
+// any left, so a caller may keep asking for frames until it answers true.
+func (we *WrapEngine) AdvanceRowCount() bool {
+	if we.RowCountComplete() {
+		return true
+	}
+	we.fillRowCountCache(we.Li.LineCount()-1, rowCountSliceBudget)
+	return we.RowCountComplete()
 }
 
 // GetRowOffset возвращает индекс первой визуальной строки для данной логической строки.

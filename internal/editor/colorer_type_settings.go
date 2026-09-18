@@ -16,7 +16,14 @@ type colorerTypeSettings struct {
 	maxLineLength int    // maxlinelength: parse at most this many characters of a line; 0 for all
 	plainEOL      bool   // fullback=no: a region running to the end of the line stops at the text
 	showCross     string // show-cross: none, vertical, horizontal, both; "" when unset
-	fore, back    int    // default-fore, default-back: RGB, -1 when unset
+	// default-fore, default-back: RGB, meaningful only when the matching
+	// flag is set. The flags are what says "unset", not a sentinel value:
+	// this struct is held zeroed until a session has been read — while the
+	// editor already draws through baseAttr — and a zero that meant
+	// "RGB 000000" painted the whole editor black on black until the
+	// Colorer worker's first round trip landed.
+	fore, back       int
+	foreSet, backSet bool
 }
 
 // readColorerTypeSettings is FarEditor::reloadTypeSettings: the "default"
@@ -24,7 +31,7 @@ type colorerTypeSettings struct {
 // there, a type cannot turn fullback back on once "default" has turned it
 // off.
 func readColorerTypeSettings(session *colorer.Session) colorerTypeSettings {
-	s := colorerTypeSettings{fore: -1, back: -1}
+	var s colorerTypeSettings
 	current, err := session.FileType()
 	if err != nil {
 		return s
@@ -41,10 +48,14 @@ func readColorerTypeSettings(session *colorer.Session) colorerTypeSettings {
 			s.maxLineLength = colorerParamInt(v, s.maxLineLength)
 		}
 		if v, ok := param("default-fore"); ok {
-			s.fore = colorerParamHex(v, s.fore)
+			if rgb, valid := colorerParamHexValue(v); valid {
+				s.fore, s.foreSet = rgb, true
+			}
 		}
 		if v, ok := param("default-back"); ok {
-			s.back = colorerParamHex(v, s.back)
+			if rgb, valid := colorerParamHexValue(v); valid {
+				s.back, s.backSet = rgb, true
+			}
 		}
 		if v, ok := param("fullback"); ok && v == "no" {
 			s.plainEOL = true
@@ -84,6 +95,16 @@ func colorerParamInt(value string, def int) int {
 // colorerParamHex is FileType::getParamValueHex: an optional '#', then
 // std::stoul in base 16, or def when that does not parse.
 func colorerParamHex(value string, def int) int {
+	if rgb, ok := colorerParamHexValue(value); ok {
+		return rgb
+	}
+	return def
+}
+
+// colorerParamHexValue is colorerParamHex with the "did it parse" answer kept
+// separate, so a colour that was never given stays unset instead of becoming
+// a real black.
+func colorerParamHexValue(value string) (int, bool) {
 	value = strings.TrimPrefix(value, "#")
 	value = strings.TrimLeft(value, " \t\n\v\f\r")
 	if len(value) > 2 && value[0] == '0' && (value[1] == 'x' || value[1] == 'X') {
@@ -94,13 +115,13 @@ func colorerParamHex(value string, def int) int {
 		end++
 	}
 	if end == 0 {
-		return def
+		return 0, false
 	}
 	n, err := strconv.ParseUint(value[:end], 16, 32)
 	if err != nil {
-		return def
+		return 0, false
 	}
-	return int(n)
+	return int(n), true
 }
 
 // truncate cuts a line to maxlinelength characters, as FarEditor::getLine
@@ -122,10 +143,10 @@ func (s colorerTypeSettings) truncate(line string) string {
 // baseAttr puts default-fore and default-back into the editor's base colour,
 // which FarEditor::convert gives every region that sets no colour of its own.
 func (s colorerTypeSettings) baseAttr(attr uint64) uint64 {
-	if s.fore >= 0 {
+	if s.foreSet {
 		attr = vtui.SetRGBFore(attr, uint32(s.fore))
 	}
-	if s.back >= 0 {
+	if s.backSet {
 		attr = vtui.SetRGBBack(attr, uint32(s.back))
 	}
 	return attr

@@ -30,6 +30,7 @@ import (
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/numeric"
 	"github.com/unxed/f4/internal/piecetable"
+	"github.com/unxed/f4/internal/stallwatch"
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/textlayout"
 	"github.com/unxed/f4/internal/textsearch"
@@ -1486,6 +1487,10 @@ func (ev *EditorView) gotoLinePosition(line, position int) {
 }
 
 func (ev *EditorView) Show(scr *vtui.ScreenBuf) {
+	// One editor frame, for --stall-watchdog: if this does not return inside
+	// the limit, the watchdog writes the stacks of every goroutine, so a
+	// freeze names itself whether it was computing or waiting on something.
+	defer stallwatch.Frame("editor.Show")()
 	ev.restartColorerAfterReload()
 	ev.ScreenObject.Show(scr)
 	if ev.topBar != nil {
@@ -1760,7 +1765,7 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 			runesProcessedInLine += fragRuneCount
 
 			isCrossRow := (absVRow == crossVRow)
-			ev.renderCells = ev.fillCellsWithLinks(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, ev.SelActive, selMin, selMax, ev.fadeSyntax(fragSyntax, bgAttr), lineLinks, 0, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, absVRow)
+			ev.renderCells = ev.fillCellsWithLinks(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, ev.SelActive, selMin, selMax, ev.fadeSyntax(fragSyntax, bgAttr), lineLinks, 0, ev.ScrollLeft+width, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, absVRow)
 
 			scr.Write(ev.X1-ev.ScrollLeft, currY, ev.renderCells)
 
@@ -1874,6 +1879,16 @@ DoneRendering:
 			ev.scrollBar.Show(scr)
 		}
 	}
+
+	// With wrapping on, the document's height is only known once every line
+	// has been laid out, and the engine does that a slice at a time rather
+	// than stalling the frame that first asks -- see GetTotalVisualRows. Until
+	// it has caught up the scroll bar is working off an underestimate, so run
+	// a slice and ask for the next frame, the same way the highlight walker
+	// keeps itself going. Each slice moves the cache on, so this ends.
+	if !ev.Engine.AdvanceRowCount() {
+		vtui.FrameManager.Redraw()
+	}
 }
 
 // VetoActionKey reports modal input states in which the editor must see
@@ -1914,6 +1929,7 @@ func (ev *EditorView) VetoActionKey(e *vtinput.InputEvent) bool {
 // away even when it moved nothing: Up at the top of a file left the user at the
 // top of the file, which is precisely where they did not want to be.
 func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
+	defer stallwatch.Frame("editor.ProcessKey")()
 	if ev.TargetLine == -1 {
 		return ev.processKeyInner(e)
 	}
@@ -2757,13 +2773,56 @@ func editorVisualClusters(text string) []editorTextCluster {
 	return clusters
 }
 
-func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, SelActive bool, selMin, selMax int, syntax []uint64, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
-	return ev.fillCellsWithLinks(target, data, defaultAttr, selAttr, offset, SelActive, selMin, selMax, syntax, nil, startVisualCol, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, visualRow)
+// editorRenderClip returns the prefix of text that is certain to cover the
+// first maxCols terminal columns, so that a line far wider than the viewport
+// is not segmented into grapheme clusters in full just to draw its left edge.
+// It gives back the whole text when it cannot clip: a line holding any
+// right-to-left run is laid out as a whole, because the bidi reordering of a
+// prefix is not the prefix of the reordering.
+func editorRenderClip(text string, maxCols int) string {
+	// A cluster of any width at all takes at least one byte, so a text no
+	// longer than the column budget already fits inside it.
+	if maxCols <= 0 || len(text) <= maxCols {
+		return text
+	}
+	if vtui.DefaultBidiMode == vtui.BidiFull && vtui.HasRTL(text) {
+		return text
+	}
+	// Four bytes is the longest a rune gets, and the slack covers a handful
+	// of combining marks riding on the last columns. Where that guess is
+	// short -- a line of heavily decomposed text -- the window doubles until
+	// the columns are covered, as the grapheme boundary helpers do.
+	take := maxCols*4 + 64
+	for take < len(text) {
+		for take < len(text) && !utf8.RuneStart(text[take]) {
+			take++
+		}
+		if take >= len(text) {
+			break
+		}
+		cols := 0
+		vtui.ForEachCluster(text[:take], func(_ string, width, _ int) { cols += width })
+		if cols >= maxCols {
+			return text[:take]
+		}
+		take *= 2
+	}
+	return text
 }
 
-func (ev *EditorView) fillCellsWithLinks(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, SelActive bool, selMin, selMax int, syntax []uint64, links []viewer.UrlLink, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
+func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, SelActive bool, selMin, selMax int, syntax []uint64, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
+	return ev.fillCellsWithLinks(target, data, defaultAttr, selAttr, offset, SelActive, selMin, selMax, syntax, nil, startVisualCol, 0, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, visualRow)
+}
+
+// maxVisualCol is the column past which the caller will not show anything, so
+// cells for it need not be built; zero asks for the whole fragment. With
+// wrapping off a fragment is the entire logical line, and a log line of tens
+// of kilobytes had a cell built for every one of its characters on every frame
+// it was on screen, only for the screen buffer to clip all but the visible
+// couple of hundred.
+func (ev *EditorView) fillCellsWithLinks(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, SelActive bool, selMin, selMax int, syntax []uint64, links []viewer.UrlLink, startVisualCol, maxVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
 	target = target[:0]
-	text := string(data)
+	text := editorRenderClip(string(data), maxVisualCol-startVisualCol)
 	clusters := editorVisualClusters(text)
 	visualCol := startVisualCol
 	tabSize := ev.TabSize
@@ -2779,6 +2838,9 @@ func (ev *EditorView) fillCellsWithLinks(target []vtui.CharInfo, data []byte, de
 	}
 
 	for _, cluster := range clusters {
+		if maxVisualCol > 0 && visualCol >= maxVisualCol {
+			break
+		}
 		var w int
 		displayText, sanitizedWidth := vtui.SanitizeCluster(cluster.text)
 		if cluster.text == "\t" {
