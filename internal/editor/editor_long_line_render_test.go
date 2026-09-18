@@ -136,3 +136,13 @@ func TestEditorRenderClip_LeavesWhatAlreadyFits(t *testing.T) {
 		t.Errorf("a line inside the viewport was clipped to %d bytes", len(got))
 	}
 }
+
+// Text that never reaches the column budget however far the window grows --
+// carriage returns, which the renderer drops rather than draws -- must come
+// back whole rather than loop.
+func TestEditorRenderClip_GivesUpOnTextWithNoColumns(t *testing.T) {
+	line := strings.Repeat("", 15000)
+	if got := editorRenderClip(line, 200); got != line {
+		t.Errorf("a line with no columns was clipped to %d of %d bytes", len(got), len(line))
+	}
+}

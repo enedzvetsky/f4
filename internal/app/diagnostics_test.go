@@ -158,3 +158,86 @@ func TestBindFrameWatch(t *testing.T) {
 		t.Error("the default build claimed to have bound a vtui hook it does not have")
 	}
 }
+
+func TestDiagnosticFlags_Apply(t *testing.T) {
+	t.Run("trace takes the word after it", func(t *testing.T) {
+		var d diagnosticFlags
+		consumed, err := d.apply("--trace", "", "t.out")
+		if err != nil || consumed != 1 || d.tracePath != "t.out" {
+			t.Errorf("apply = %d, %v; tracePath %q", consumed, err, d.tracePath)
+		}
+	})
+	t.Run("trace leaves a switch alone", func(t *testing.T) {
+		var d diagnosticFlags
+		consumed, err := d.apply("--trace", "", "--version")
+		if err != nil || consumed != 0 || d.tracePath != "" {
+			t.Errorf("apply = %d, %v; tracePath %q", consumed, err, d.tracePath)
+		}
+	})
+	t.Run("watchdog takes a duration", func(t *testing.T) {
+		var d diagnosticFlags
+		consumed, err := d.apply("--stall-watchdog", "", "1s")
+		if err != nil || consumed != 1 || d.stallLimit != time.Second {
+			t.Errorf("apply = %d, %v; limit %v", consumed, err, d.stallLimit)
+		}
+	})
+	t.Run("watchdog leaves a filename alone", func(t *testing.T) {
+		var d diagnosticFlags
+		consumed, err := d.apply("--stall-watchdog", "", "notes.txt")
+		if err != nil || consumed != 0 || d.stallLimit != defaultStallWatchdogLimit {
+			t.Errorf("apply = %d, %v; limit %v", consumed, err, d.stallLimit)
+		}
+	})
+	t.Run("a value written after = was meant as one", func(t *testing.T) {
+		var d diagnosticFlags
+		if _, err := d.apply("--stall-watchdog", "nonsense", ""); err == nil {
+			t.Error("a bad duration after = was accepted")
+		}
+	})
+	t.Run("another switch is not ours", func(t *testing.T) {
+		var d diagnosticFlags
+		consumed, err := d.apply("--version", "", "x")
+		if err != nil || consumed != 0 || d.wanted() {
+			t.Errorf("apply(--version) = %d, %v; wanted %v", consumed, err, d.wanted())
+		}
+	})
+}
+
+func TestDiagnosticFlags_Wanted(t *testing.T) {
+	var none diagnosticFlags
+	if none.wanted() {
+		t.Error("a command line that asked for nothing wants something")
+	}
+	if !(diagnosticFlags{tracePath: "t.out"}).wanted() {
+		t.Error("--trace alone was not wanted")
+	}
+	if !(diagnosticFlags{stallLimit: time.Second}).wanted() {
+		t.Error("--stall-watchdog alone was not wanted")
+	}
+}
+
+func TestDiagnosticFlags_Arm(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "crashes")
+	d := diagnosticFlags{stallLimit: 300 * time.Millisecond}
+	stop := d.arm(dir)
+	defer stop()
+	if _, err := os.Stat(filepath.Join(dir, "stall-watchdog.log")); err != nil {
+		t.Errorf("arm did not start the watchdog: %v", err)
+	}
+}
+
+// A run started to collect evidence must not carry on quietly collecting
+// none, so a path that cannot be written stops it.
+func TestDiagnosticFlags_ArmPanicsOnAPathItCannotWrite(t *testing.T) {
+	blocked := filepath.Join(t.TempDir(), "in-the-way")
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a trace that could not be created did not stop the run")
+		}
+	}()
+	d := diagnosticFlags{tracePath: filepath.Join(blocked, "trace.out")}
+	d.arm(t.TempDir())()
+}

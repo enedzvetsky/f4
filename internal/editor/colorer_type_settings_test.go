@@ -157,3 +157,39 @@ func TestColorerParamHexValue(t *testing.T) {
 		}
 	}
 }
+
+// default-fore is read the same way default-back is; only the profile in the
+// other test happens to set the background.
+func TestReadColorerTypeSettings_ForegroundFromTheProfile(t *testing.T) {
+	config.GetF4ConfigDir()
+	old := config.CachedF4ConfigDir
+	config.CachedF4ConfigDir = t.TempDir()
+	t.Cleanup(func() { config.CachedF4ConfigDir = old })
+	ResetColorerSessions()
+	t.Cleanup(ResetColorerSessions)
+
+	user := t.TempDir()
+	writeUserHRC(t, user, "pairtest.hrc", pairTestHRC)
+	settingsPath := filepath.Join(t.TempDir(), "hrcsettings.xml")
+	if err := os.WriteFile(settingsPath, []byte(`<hrc-settings><prototype name="pairtest"><param name="default-fore" value="#334455"/></prototype></hrc-settings>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	src := ColorerSource{ConfigsDir: checkConfigs(t), UserHRC: user, UserHRCSettings: settingsPath}
+	session, err := acquireCancelableColorerSession(context.Background(), src)
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	defer session.Close()
+	if ok, err := session.SetFileType("pairtest"); err != nil || !ok {
+		t.Fatalf("SetFileType: %v, %v", ok, err)
+	}
+
+	got := readColorerTypeSettings(session)
+	if !got.foreSet || got.fore != 0x334455 {
+		t.Errorf("settings %+v, want fore 0x334455 set", got)
+	}
+	if got.backSet {
+		t.Errorf("an unset background was read as set: %+v", got)
+	}
+}
