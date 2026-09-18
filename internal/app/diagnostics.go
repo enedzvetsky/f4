@@ -62,8 +62,8 @@ func stallWatchdogLimit(flagVal, next string) (limit time.Duration, consumedNext
 func armDiagnostics(tracePath string, stallLimit time.Duration, crashesDir string) (stop func(), notice string, err error) {
 	stop = func() {}
 	if tracePath != "" {
-		// #nosec G304 -- tracePath is what the user typed after --trace;
-		// writing where they asked is the whole feature.
+		// #nosec G703 -- tracePath is the path the user typed after
+		// --trace; writing where they asked is the whole feature.
 		f, createErr := os.Create(tracePath)
 		if createErr != nil {
 			return stop, "", createErr

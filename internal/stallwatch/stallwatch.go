@@ -242,8 +242,8 @@ func dump(reason string) {
 		return
 	}
 	defer func() { _ = f.Close() }()
-	fmt.Fprintf(f, "f4 stall: %s (limit %v)\n", reason, time.Duration(threshold.Load()))
-	fmt.Fprintf(f, "taken at %s\n\n", time.Now().Format(time.RFC3339Nano))
+	_, _ = fmt.Fprintf(f, "f4 stall: %s (limit %v)\n", reason, time.Duration(threshold.Load()))
+	_, _ = fmt.Fprintf(f, "taken at %s\n\n", time.Now().Format(time.RFC3339Nano))
 	if p := pprof.Lookup("goroutine"); p != nil {
 		_ = p.WriteTo(f, 2)
 	}
@@ -265,5 +265,5 @@ func logLocked(format string, a ...any) {
 		return
 	}
 	defer func() { _ = f.Close() }()
-	fmt.Fprintf(f, "[%s] %s\n", time.Now().Format("15:04:05.000"), fmt.Sprintf(format, a...))
+	_, _ = fmt.Fprintf(f, "[%s] %s\n", time.Now().Format("15:04:05.000"), fmt.Sprintf(format, a...))
 }
