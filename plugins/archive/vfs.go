@@ -194,6 +194,30 @@ func NewArchiveVFSContext(ctx context.Context, parent vfs.VFS, archivePath strin
 		}
 		finalPath = lease.Path()
 		closer = lease
+		// The same probe the local branch runs, for the same reason: a
+		// self-extracting archive names itself after its stub, so the
+		// extension-based detector never sees it, and the readers below look
+		// for the archive at byte zero. The materialized copy is an ordinary
+		// local file, so the probe works on it unchanged -- it is only the
+		// carved result that has to be owned separately, because the copy it
+		// was cut out of is no longer needed once the cut is made.
+		if format == "" {
+			embedded, backingPath, sfxCloser, probeErr := materializeNestedSFX(finalPath)
+			if probeErr != nil {
+				_ = lease.Close()
+				return nil, probeErr
+			}
+			if embedded.format != "" {
+				format = embedded.format
+				sfxOffset = embedded.offset
+				sfxSuffix = embedded.suffix
+				if embedded.offset > 0 {
+					finalPath = backingPath
+					closer = sfxCloser
+					_ = lease.Close()
+				}
+			}
+		}
 	}
 
 	fsys, password, cleanupTransferred, err := openArchiveFSWithPasswordPrompt(ctx, finalPath, displayName, closer)
@@ -1852,6 +1876,80 @@ func (v *ArchiveVFS) SetAttributes(ctx context.Context, path string, item vfs.VF
 func (v *ArchiveVFS) GetCapabilities() vfs.VFSCapabilities {
 	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: runtime.GOOS != "windows"}
 }
+
+// ReadHead serves vfs.HeadReader, and a ZIP can serve it. Whatever the
+// archive file itself came from, it is read through a local backing file --
+// the parent's own path when that parent is on disk, a materialization of it
+// otherwise -- and a ZIP member is decoded as it is read, so asking for the
+// first block costs the first block and reaches no network.
+//
+// Every other format declines. A member of a RAR, and of anything else that
+// arrives through the generic reader, is unpacked whole into a temporary file
+// before the first byte of it can be handed back: asking such a backend for
+// 256 KiB would quietly charge the member's full size in time and in disk,
+// and the caller asked precisely because it cannot afford that.
+//
+// Which it is follows the backing file and the reader that was opened over
+// it, never this archive's declared format: that one comes from the name, and
+// a name is exactly what a ZIP reader does not get to be chosen by. A RAR
+// renamed to .zip still opens -- the format probe in openArchiveFileSystem
+// recognizes it and hands it to the volume-aware RAR reader -- and unpacking
+// one of its members whole is the cost this refuses to pay.
+//
+// It is also deliberately not Open. Open answers a password error by asking
+// the user for one, and the caller here may be the very thread that would
+// have to draw that dialog. A member the installed password does not open is
+// reported as an error instead, which is all the caller wants to know.
+func (v *ArchiveVFS) ReadHead(ctx context.Context, path string, p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	v.mu.Lock()
+	// The same question zipperarchive.OpenFS asks of the same path, so the
+	// answer is the reader it built and not a second guess at it.
+	if archive.DetectFormat(v.backingPath) != "zip" {
+		v.mu.Unlock()
+		return 0, vfs.ErrHeadUnavailable
+	}
+	if err := v.ensureFSLocked(); err != nil {
+		v.mu.Unlock()
+		return 0, err
+	}
+	if _, isRAR := v.fsys.(*rarArchiveFileSystem); isRAR {
+		v.mu.Unlock()
+		return 0, vfs.ErrHeadUnavailable
+	}
+	fsPath, err := v.resolveInnerPath(path)
+	if err != nil {
+		v.mu.Unlock()
+		return 0, err
+	}
+	v.cancelCleanupLocked()
+	v.activeCount++
+	fsys := v.fsys
+	v.mu.Unlock()
+	defer v.decrementActive()
+
+	file, err := fsys.Open(fsPath)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = file.Close() }() // The member was opened only to look at its first bytes.
+
+	n, err := io.ReadFull(file, p)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		err = nil
+	}
+	return n, err
+}
+
 func (v *ArchiveVFS) Search(ctx context.Context, p, pat string) (chan int64, error) { return nil, nil }
 func (v *ArchiveVFS) Close() error {
 	v.mu.Lock()
@@ -1967,6 +2065,20 @@ func (v *ArchiveVFS) Clone() vfs.VFS {
 			return vfs.NewNullVFS(0)
 		}
 		finalPath, closer = lease.Path(), lease
+		if sfxOffset > 0 {
+			// The lease materializes the stub as well, and this decoder needs
+			// the archive under it, exactly as the local branch above does.
+			carved, sfxCloser, err := materializeEmbeddedArchiveAlone(finalPath, embeddedArchive{
+				format: format,
+				suffix: sfxSuffix,
+				offset: sfxOffset,
+			})
+			_ = lease.Close()
+			if err != nil {
+				return vfs.NewNullVFS(0)
+			}
+			finalPath, closer = carved, sfxCloser
+		}
 	}
 
 	fsys, _, err := openArchiveFSWithContext(context.Background(), finalPath, displayName, closer, password)

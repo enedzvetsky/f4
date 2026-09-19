@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -31,8 +32,7 @@ func (p *ArchiveProvider) PanelEnterAllowed(ctx context.Context, parent vfs.VFS,
 	if ctx != nil && ctx.Err() != nil {
 		return false
 	}
-	osvfs, ok := parent.(*vfs.OSVFS)
-	if !ok {
+	if _, isLocal := parent.(*vfs.OSVFS); !isLocal {
 		// Not the local file system: inside another archive or on a remote
 		// one there is no association and no system opener to hand Enter
 		// to, so the content stays the only thing to go on.
@@ -45,11 +45,7 @@ func (p *ArchiveProvider) PanelEnterAllowed(ctx context.Context, parent vfs.VFS,
 	if !nameDeclaresArchive(name) && filepath.Ext(name) != "" {
 		return false
 	}
-	localPath, err := osvfs.Abs(path)
-	if err != nil {
-		return true
-	}
-	embedded, found, err := findEmbeddedArchive(localPath)
+	embedded, found, err := probeArchive(ctx, parent, path)
 	return err != nil || !found || embedded.offset <= 0
 }
 
@@ -120,15 +116,51 @@ func (p *ArchiveProvider) CanOpen(ctx context.Context, parent vfs.VFS, path stri
 	if format != "" {
 		return true
 	}
+	_, found, err := probeArchive(ctx, parent, path)
+	return err == nil && found
+}
+
+// headProbeLimit is how far into a file the probe reads when the bytes are
+// not on the local disk. It is far2l's PluginMaxReadData, the size of the
+// window its plugin manager maps over a file before asking the format modules
+// whether they recognize it (far2l/src/plug/plugins.cpp), and it is the same
+// bet: an archive announces itself at the start of the file, and what sits in
+// front of one is a stub.
+const headProbeLimit = 256 << 10
+
+// probeArchive finds the archive in a file by reading its first bytes, and it
+// is the only thing in this package that decides what a file is. far2l
+// decides the same way: its format modules are handed a window over the file
+// and are never told its name, so a .jar is a zip there and opens as one.
+//
+// One question, one scanner, two budgets. On the local disk the bytes are
+// free -- the file is right there and nothing has to be decoded to reach byte
+// n -- so the scan runs to sfxProbeLimit, far enough to find the archive
+// behind an installer stub of any size anyone ships. Everywhere else each
+// byte is decompressed or fetched while the panel waits on the answer, so the
+// window is far2l's, and only a file system that offered to produce it
+// cheaply and silently is asked at all. The rest report nothing and are left
+// to be judged by their names, which is what they were before this existed.
+func probeArchive(ctx context.Context, parent vfs.VFS, path string) (embeddedArchive, bool, error) {
+	if parent == nil {
+		return embeddedArchive{}, false, nil
+	}
 	if osvfs, ok := parent.(*vfs.OSVFS); ok {
 		localPath, err := osvfs.Abs(path)
 		if err != nil {
-			return false
+			return embeddedArchive{}, false, err
 		}
-		_, found, err := findEmbeddedArchive(localPath)
-		return err == nil && found
+		return findEmbeddedArchive(localPath)
 	}
-	return false
+	head, err := vfs.ReadFileHead(ctx, parent, path, headProbeLimit)
+	if err != nil || len(head) == 0 {
+		return embeddedArchive{}, false, err
+	}
+	// One buffer read twice: sequentially for the signature scan, and by
+	// offset for the signatures that verify themselves. Both address the
+	// same bytes from the start of the file, which is what the scan needs.
+	window := bytes.NewReader(head)
+	return scanEmbeddedArchive(window, window, int64(len(head)))
 }
 
 func (p *ArchiveProvider) Open(ctx context.Context, parent vfs.VFS, path string) (vfs.VFS, error) {

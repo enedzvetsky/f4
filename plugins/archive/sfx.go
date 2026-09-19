@@ -89,8 +89,17 @@ func findEmbeddedArchive(filename string) (embeddedArchive, bool, error) {
 		return embeddedArchive{}, false, err
 	}
 	defer func() { _ = file.Close() }()
+	return scanEmbeddedArchive(file, file, sfxProbeLimit)
+}
 
+// scanEmbeddedArchive looks for the first archive signature in the first
+// limit bytes of source. reader is read sequentially from its current
+// position; at is the same file seen as random access, which the signatures
+// that validate themselves need and which must therefore address the same
+// bytes from offset zero.
+func scanEmbeddedArchive(reader io.Reader, at io.ReaderAt, limit int64) (embeddedArchive, bool, error) {
 	const chunkSize = 64 << 10
+	const maxNoProgressReads = 100
 	maxMagic := 0
 	for _, signature := range sfxSignatures {
 		if len(signature.magic) > maxMagic {
@@ -101,12 +110,24 @@ func findEmbeddedArchive(filename string) (embeddedArchive, bool, error) {
 	chunk := make([]byte, chunkSize)
 	var carry []byte
 	var scanned int64
-	for scanned < sfxProbeLimit {
+	var noProgress int
+	for scanned < limit {
 		want := int64(len(chunk))
-		if remaining := sfxProbeLimit - scanned; remaining < want {
+		if remaining := limit - scanned; remaining < want {
 			want = remaining
 		}
-		n, readErr := file.Read(chunk[:int(want)])
+		n, readErr := reader.Read(chunk[:int(want)])
+		if n == 0 && readErr == nil {
+			// A reader is discouraged from returning nothing and no error,
+			// but it is allowed to, and the loop only advances on bytes. Give
+			// up the way io.ReadAtLeast does rather than spin on a reader
+			// that has stopped making progress.
+			if noProgress++; noProgress >= maxNoProgressReads {
+				return embeddedArchive{}, false, io.ErrNoProgress
+			}
+			continue
+		}
+		noProgress = 0
 		if n > 0 {
 			block := make([]byte, 0, len(carry)+n)
 			block = append(block, carry...)
@@ -122,7 +143,7 @@ func findEmbeddedArchive(filename string) (embeddedArchive, bool, error) {
 				accepted := true
 				if candidate.accept != nil {
 					var acceptErr error
-					if accepted, acceptErr = candidate.accept(file, offset); acceptErr != nil {
+					if accepted, acceptErr = candidate.accept(at, offset); acceptErr != nil {
 						return embeddedArchive{}, false, acceptErr
 					}
 				}
@@ -364,7 +385,25 @@ func copySFXFile(dst, source string, offset int64) error {
 // executable stub and, when one is found, copies it to a private backing file
 // the archive readers can open. The returned embeddedArchive has a zero offset
 // when there is nothing to materialize; the path is then localPath itself.
+//
+// materializeLocalSFX is the entry point for a file that is where its author
+// put it, so the rest of a split archive can be lying beside it and is
+// collected along with it.
 func materializeLocalSFX(localPath string) (embeddedArchive, string, io.Closer, error) {
+	return materializeSFX(localPath, true)
+}
+
+// materializeNestedSFX probes a copy that was materialized out of another
+// file system into a temporary directory of its own. It is the same probe,
+// minus the search for companion volumes: only this one member was
+// materialized, so its split siblings cannot be next to it, and looking for
+// them there means reading the whole system temporary directory on every open
+// -- and failing the open when that read fails.
+func materializeNestedSFX(localPath string) (embeddedArchive, string, io.Closer, error) {
+	return materializeSFX(localPath, false)
+}
+
+func materializeSFX(localPath string, volumesBeside bool) (embeddedArchive, string, io.Closer, error) {
 	// A zip keeps the offsets of its entries in the central directory at the
 	// end of the file, and a tool that appends one to an executable stub may
 	// count the stub in those offsets or not. The zip reader works out which
@@ -386,7 +425,13 @@ func materializeLocalSFX(localPath string) (embeddedArchive, string, io.Closer, 
 	if !found || embedded.offset <= 0 {
 		return embeddedArchive{}, localPath, nil, nil
 	}
-	backingPath, closer, err := materializeEmbeddedArchive(localPath, embedded)
+	var backingPath string
+	var closer io.Closer
+	if volumesBeside {
+		backingPath, closer, err = materializeEmbeddedArchive(localPath, embedded)
+	} else {
+		backingPath, closer, err = materializeEmbeddedArchiveAlone(localPath, embedded)
+	}
 	if err != nil {
 		return embeddedArchive{}, "", nil, err
 	}
@@ -416,20 +461,7 @@ func materializeEmbeddedArchive(filename string, embedded embeddedArchive) (stri
 		return "", nil, err
 	}
 	if len(plan.companions) == 0 {
-		target, err := os.CreateTemp("", "f4-sfx-*"+embedded.suffix)
-		if err != nil {
-			return "", nil, err
-		}
-		targetName := target.Name()
-		if err := target.Close(); err != nil {
-			_ = os.Remove(targetName)
-			return "", nil, err
-		}
-		if err := copySFXFile(targetName, filename, embedded.offset); err != nil {
-			_ = os.Remove(targetName)
-			return "", nil, err
-		}
-		return targetName, &sfxBacking{path: targetName}, nil
+		return materializeEmbeddedArchiveAlone(filename, embedded)
 	}
 
 	dir, err := os.MkdirTemp("", "f4-sfx-*")
@@ -449,4 +481,28 @@ func materializeEmbeddedArchive(filename string, embedded embeddedArchive) (stri
 		}
 	}
 	return targetName, &sfxBacking{path: targetName, dir: dir}, nil
+}
+
+// materializeEmbeddedArchiveAlone copies the archive out from under its stub
+// and nothing else. It is what a single self-extracting file needs, whether
+// it never had companion volumes or is a copy that was materialized without
+// them.
+func materializeEmbeddedArchiveAlone(filename string, embedded embeddedArchive) (string, io.Closer, error) {
+	if embedded.offset <= 0 {
+		return filename, nil, nil
+	}
+	target, err := os.CreateTemp("", "f4-sfx-*"+embedded.suffix)
+	if err != nil {
+		return "", nil, err
+	}
+	targetName := target.Name()
+	if err := target.Close(); err != nil {
+		_ = os.Remove(targetName)
+		return "", nil, err
+	}
+	if err := copySFXFile(targetName, filename, embedded.offset); err != nil {
+		_ = os.Remove(targetName)
+		return "", nil, err
+	}
+	return targetName, &sfxBacking{path: targetName}, nil
 }
