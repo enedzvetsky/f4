@@ -390,7 +390,6 @@ RemoteCmd.BtnClose=إ&غلاق
 PanelSettings.Title= إعدادات اللوحة
 PanelSettings.ShowHidden=إظهار الملفات المخ&فية وملفات النظام
 PanelSettings.ShowDirPrefix=إظهار البادئة '/' للم&جلدات
-PanelSettings.ShowSymlinkArrow=سهم قبل الارتباطات ال&رمزية
 PanelSettings.SeparateExtensions=محاذاة امتدادات ال&ملفات إلى اليمين
 PanelSettings.Scrollbars=أشرطة الت&مرير للوحة:
 PanelSettings.ScrollbarsOff=عدم الإظهار
@@ -408,6 +407,7 @@ PanelSettings.DefaultMode=وضع التشغيل الاف&تراضي:
 PanelSettings.PathDisplay=مسار الملف قيد المعالجة:
 PanelSettings.InfoPanelCPUGPU=عرض قسم المعالج والرسوميات في لوحة المعلو&مات
 PanelSettings.EscTogglePanels=مفتاح Esc يب&دل رؤية اللوحات
+PanelSettings.ShowSymlinkArrow=سهم قبل الارتباطات ال&رمزية
 
 Jobs.Title=المهام الخلفية
 Jobs.BtnShow=ع&رض
