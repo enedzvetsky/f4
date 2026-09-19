@@ -62,3 +62,38 @@ outranks the content for the default action:
 
 Both fail before the change and pass after it. Nothing here is
 platform-specific: the reproduction and the fix were measured on Linux.
+
+## Amendment: packages, and the rule as a setting
+
+The rule above answered the question from the shape of the name -- any
+extension that is not an archive's keeps Enter for its association -- which
+is wider than what the issue reported. It reported office documents; it also
+caught `.jar` and `.apk`, and neither ancestor treats those that way. Far
+Manager's arclite lists `*.jar` and `*.[ah]pk` among the names Enter may open
+(`arclite/options.cpp`), and far2l's `KnownDocumentTypes`
+(`multiarc/src/MultiArc.cpp`) does not mention them, so both browse a package
+on Enter.
+
+The deduction is therefore replaced by a list, and the list by a setting:
+
+- `nameDeclaresArchive` is gone. In its place `PanelEnterAllowed` asks
+  `ArchiveEnterExcludeMask` -- a far2l file mask under `[Panel]`, so `|` still
+  carves an exception out of it -- whether this name keeps Enter for its
+  association. A name nobody listed is left to its content, which is how both
+  ancestors treat everything off their own lists.
+- The default is far2l's `KnownDocumentTypes` verbatim, plus `*.epub`, which
+  this issue named and far2l's list does not. Every document the issue
+  reported behaves exactly as it did.
+- `.jar`, `.apk` and the other packages now open on Enter, as they do in Far
+  and in far2l. Anyone who wants them back names them in the mask.
+
+Far keeps its list in a setting for the same reason (`use_include_masks` and
+friends), and it is the half worth copying: whether Enter should browse a
+`.whl` or launch a `.cbz` is a preference, and a preference belongs in
+`f4.ini` rather than in an argument about defaults.
+
+Tests: `TestIssue1184PackagesFollowTheirContent` pins the packages and shows
+the mask putting one of them back; `TestIssue1184EnterExcludeMask` replaces
+the `nameDeclaresArchive` table, covering the default list, an empty mask and
+the `|` exception. `TestIssue1184DocumentsKeepEnterForAssociation` is
+unchanged apart from losing `lib.jar` and gaining a mixed-case name.

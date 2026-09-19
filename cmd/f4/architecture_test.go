@@ -64,6 +64,12 @@ var architectureLayers = map[string]int{
 	// all four without putting one of them under another.
 	"internal/ini": 0,
 
+	// The far2l file mask matcher. A leaf because a file mask is a string
+	// question with no owner: the panel matches associations with it, the
+	// archive plugin asks it which names Enter must leave to their
+	// association, and neither may import the other.
+	"internal/filemask": 0,
+
 	// The frame watchdog: a leaf that imports nothing of ours, so any view
 	// can mark its frame and the root can arm it from a command line switch.
 	"internal/stallwatch": 0,

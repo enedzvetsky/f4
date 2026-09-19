@@ -155,22 +155,31 @@ func TestArchiveProviderFindsNestedSFX(t *testing.T) {
 	}
 }
 
-// The local file system keeps its own rule: the name outranks the content for
-// the default action, so Enter on a .jar runs its association and Ctrl+PgDn is
-// the gesture that opens it as an archive.
-func TestArchiveProviderLocalJarKeepsItsAssociation(t *testing.T) {
+// The local file system applies the Enter mask, and a .jar is not on it: both
+// ancestors browse a package on Enter, so f4 does too. A document is on it, so
+// it keeps Enter for its association while Ctrl+PgDn still browses it.
+func TestArchiveProviderLocalEnterFollowsTheMask(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "app.jar"), zipBytes(t, "a.txt", []byte("x")), 0o600); err != nil {
-		t.Fatal(err)
+	container := zipBytes(t, "a.txt", []byte("x"))
+	for _, name := range []string{"app.jar", "report.docx"} {
+		if err := os.WriteFile(filepath.Join(root, name), container, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	provider := &ArchiveProvider{}
 	parent := vfs.NewOSVFS(root)
-	if !provider.CanOpen(context.Background(), parent, "app.jar") {
-		t.Fatal("Ctrl+PgDn must still open a local .jar as an archive")
+	ctx := context.Background()
+	for _, name := range []string{"app.jar", "report.docx"} {
+		if !provider.CanOpen(ctx, parent, name) {
+			t.Fatalf("%s: Ctrl+PgDn must open the container", name)
+		}
 	}
-	if provider.PanelEnterAllowed(context.Background(), parent, "app.jar") {
-		t.Fatal("Enter on a local .jar belongs to its association")
+	if !provider.PanelEnterAllowed(ctx, parent, "app.jar") {
+		t.Error("Enter browses a .jar in Far and in far2l")
+	}
+	if provider.PanelEnterAllowed(ctx, parent, "report.docx") {
+		t.Error("Enter on a .docx belongs to its association")
 	}
 }
 
