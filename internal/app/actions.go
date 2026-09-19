@@ -3601,7 +3601,9 @@ func actionPanelSettings(pf *panel.PanelsFrame) {
 	// display options live in actionPanelAdditionalSettings below. Keeping both
 	// pages as ordinary dialogs means they remain usable on a 25-row terminal
 	// without introducing a second scrolling container for interactive items.
-	dlg := vtui.NewCenteredDialog(60, 24, i18n.Msg("PanelSettings.Title"))
+	// This page now spends that whole budget: the next option added here needs
+	// a row freed somewhere else, or a home on the Additional page.
+	dlg := vtui.NewCenteredDialog(60, 25, i18n.Msg("PanelSettings.Title"))
 	dlg.ShowClose = true
 
 	chkHidden := vtui.NewCheckbox(0, 0, i18n.Msg("PanelSettings.ShowHidden"), false)
@@ -3620,6 +3622,12 @@ func actionPanelSettings(pf *panel.PanelsFrame) {
 	chkHighlightMarks.State = 0
 	if config.App.ShowHighlightMarks {
 		chkHighlightMarks.State = 1
+	}
+
+	chkSymlinkArrow := vtui.NewCheckbox(0, 0, i18n.Msg("PanelSettings.ShowSymlinkArrow"), false)
+	chkSymlinkArrow.State = 0
+	if config.App.ShowSymlinkArrow {
+		chkSymlinkArrow.State = 1
 	}
 
 	chkSeparateExtensions := vtui.NewCheckbox(0, 0, i18n.Msg("PanelSettings.SeparateExtensions"), false)
@@ -3693,6 +3701,7 @@ func actionPanelSettings(pf *panel.PanelsFrame) {
 	dlg.AddItem(chkHidden)
 	dlg.AddItem(chkDirPrefix)
 	dlg.AddItem(chkHighlightMarks)
+	dlg.AddItem(chkSymlinkArrow)
 	dlg.AddItem(chkSeparateExtensions)
 	dlg.AddItem(chkFileInfo)
 	dlg.AddItem(lblScrollbars)
@@ -3709,11 +3718,12 @@ func actionPanelSettings(pf *panel.PanelsFrame) {
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 
-	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 56, 20)
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 56, 21)
 	// First checkbox cluster — stack tight, no blank rows between.
 	vbox.Add(chkHidden, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkDirPrefix, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkHighlightMarks, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(chkSymlinkArrow, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkSeparateExtensions, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkFileInfo, vtui.Margins{}, vtui.AlignLeft)
 	// Blank row before the scrollbar combo — transition to a different
@@ -3749,6 +3759,7 @@ func actionPanelSettings(pf *panel.PanelsFrame) {
 		config.App.ShowHiddenFiles = chkHidden.State == 1
 		config.App.ShowDirPrefix = chkDirPrefix.State == 1
 		config.App.ShowHighlightMarks = chkHighlightMarks.State == 1
+		config.App.ShowSymlinkArrow = chkSymlinkArrow.State == 1
 		config.App.SeparateFileExtensions = chkSeparateExtensions.State == 1
 		config.App.ShowPanelFileInfo = chkFileInfo.State == 1
 		config.App.PanelScrollbarMode = config.PanelScrollbarMode(comboScrollbars.Menu.SelectPos)

@@ -60,7 +60,8 @@ AutoSaveCurrentPanel|workspaces|Automatic saving|Save panel locations automatica
 AutoSaveGUIWindow|workspaces|Automatic saving|Save graphical window automatically|Remember supported graphical-window dimensions and position, not external terminal geometry.||live
 ShowHiddenFiles|panels|File listing|Show hidden files|Include hidden files and folders in the listing. The parent-directory entry remains visible.||live
 ShowDirPrefix|panels|File listing|Prefix folder names|Prefix folder names with a slash, unless a highlight rule already supplies one.||live
-ShowHighlightMarks|panels|File listing|Show highlight marks|Show markers from matching file-highlight rules. Also affects path suggestions; symlinks retain their fallback arrow.||live
+ShowHighlightMarks|panels|File listing|Show highlight marks|Show markers from matching file-highlight rules. Also affects path suggestions; a symlink no rule marks follows its own arrow setting.||live
+ShowSymlinkArrow|panels|File listing|Arrow before symbolic links|Prefix the name of a symbolic link with an arrow when no highlight rule marks it. The link target shown beside the focused entry is not affected.||live
 SeparateFileExtensions|panels|File listing|Separate filename extensions|Align the final extension separately in the name column. Excludes folders, extensionless names and leading dots alone.||live
 ShowPanelFileInfo|panels|File listing|Focused-file status row|Reserve a bottom row for the focused name, size and modification time. Short panels suppress this row.||live
 PanelScrollbarMode|panels|File listing|Panel scrollbar|Hide the scrollbar, show a minimal one, or show the full scrollbar with arrows.|0:Off;1:Minimal;2:Full|live

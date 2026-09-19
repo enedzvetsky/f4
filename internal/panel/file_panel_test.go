@@ -4886,6 +4886,10 @@ func TestFileEntry_SymlinkDisplayNameAndStatus(t *testing.T) {
 	vtui.SetDefaultPalette()
 	theme.SetDefaultF4Palette()
 
+	oldConfig := config.App
+	defer func() { config.App = oldConfig }()
+	config.App.ShowSymlinkArrow = true
+
 	entryFile := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_file", IsSymlink: true}}
 	entryDir := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_dir", IsDir: true, IsSymlink: true}}
 
@@ -4894,6 +4898,58 @@ func TestFileEntry_SymlinkDisplayNameAndStatus(t *testing.T) {
 	}
 	if got := entryDir.displayName(entryDir.Name); !strings.Contains(got, "→") {
 		t.Errorf("Symlink dir displayName = %q, want it to contain '→'", got)
+	}
+}
+
+// ShowSymlinkArrow=1 brings back the arrow for someone who wants symbolic
+// links called out in the name column; off is the default. The switch governs
+// only that fallback marker: a highlight rule that marks the link keeps its
+// own marker either way, and so does the folder slash.
+func TestFileEntry_SymlinkArrowSetting(t *testing.T) {
+	vtui.SetDefaultPalette()
+	theme.SetDefaultF4Palette()
+
+	oldRules := theme.GlobalFileHighlighter.Rules
+	defer func() { theme.GlobalFileHighlighter.Rules = oldRules }()
+	theme.GlobalFileHighlighter.Rules = nil
+
+	oldConfig := config.App
+	defer func() { config.App = oldConfig }()
+	config.App.ShowHighlightMarks = false
+	config.App.ShowDirPrefix = false
+
+	entryFile := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_file", IsSymlink: true}}
+	entryDir := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_dir", IsDir: true, IsSymlink: true}}
+
+	config.App.ShowSymlinkArrow = false
+	if got := entryFile.displayName(entryFile.Name); got != "link_file" {
+		t.Errorf("Symlink file displayName = %q, want the bare name", got)
+	}
+	if got := entryDir.displayName(entryDir.Name); got != "link_dir" {
+		t.Errorf("Symlink dir displayName = %q, want the bare name", got)
+	}
+
+	config.App.ShowDirPrefix = true
+	if got := entryDir.displayName(entryDir.Name); got != "/link_dir" {
+		t.Errorf("Symlink dir displayName = %q, want the folder slash kept", got)
+	}
+	config.App.ShowDirPrefix = false
+
+	iniData := `[Highlight_0]
+Name = Links
+Mask = link_file
+Mark = •
+`
+	theme.GlobalFileHighlighter.LoadFromIni(ini.Parse(strings.NewReader(iniData)))
+	config.App.ShowHighlightMarks = true
+	if got := entryFile.displayName(entryFile.Name); got != "• link_file" {
+		t.Errorf("Marked symlink displayName = %q, want the rule's marker", got)
+	}
+
+	config.App.ShowSymlinkArrow = true
+	config.App.ShowHighlightMarks = false
+	if got := entryFile.displayName(entryFile.Name); got != "→ link_file" {
+		t.Errorf("Symlink displayName = %q, want the arrow back", got)
 	}
 }
 

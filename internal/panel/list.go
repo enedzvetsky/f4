@@ -125,7 +125,10 @@ func (f *FileEntry) displayName(name string) string {
 	if config.App.ShowHighlightMarks {
 		marker = theme.GlobalFileHighlighter.GetMarker(&f.VFSItem)
 	}
-	if marker == "" && f.IsSymlink {
+	// A symlink no highlight rule marks can carry an arrow instead. It is off
+	// by default: the panel reads as plain names unless ShowSymlinkArrow asks
+	// for the marker.
+	if marker == "" && f.IsSymlink && config.App.ShowSymlinkArrow {
 		marker = "→"
 	}
 	prefix := ""

@@ -44,6 +44,13 @@ func TestWithOptionReadsTheValueBackLikeLoadConfig(t *testing.T) {
 	if next := WithOption(cfg, "Panel", "ShowHiddenFiles", "yes"); next.ShowHiddenFiles {
 		t.Error("ShowHiddenFiles = yes was kept as on")
 	}
+	// The symlink arrow is off unless the key asks for it.
+	if cfg.ShowSymlinkArrow {
+		t.Error("ShowSymlinkArrow is on by default; the arrow must appear only when it is switched on")
+	}
+	if next := WithOption(cfg, "Panel", "ShowSymlinkArrow", "1"); !next.ShowSymlinkArrow {
+		t.Error("ShowSymlinkArrow = 1 was not honoured")
+	}
 	cfg.EditorTabSize = 2
 	next := WithOption(cfg, "Panel", "ShowDirPrefix", "1")
 	if !next.ShowDirPrefix || next.EditorTabSize != 2 {
